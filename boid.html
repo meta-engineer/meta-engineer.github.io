@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- JS security? only runs scripts with self origin?-->
+    <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';">
+    <title>Boids</title>
+    <link rel="stylesheet" href="boid.css">
+    <link rel="shortcut icon" href="boid.ico"/>
+</head>
+<body>
+    <!--
+    We are using node <script>document.write(process.versions.node)</script>,
+    Chrome <script>document.write(process.versions.chrome)</script>,
+    and Electron <script>document.write(process.versions.electron)</script>.
+        
+    -->
+<div id="info" onclick="toggleInfo()"}>
+        <p>
+            BOIDS
+            <br><br>
+            Boids aka flocking systems imitate the movement behaviour of natural systems such as birds through the emergent properties of simple local rules for each individual. 
+            <br>
+            That is to say each object you see steers themselves by:
+            <br>
+            1. Steering away from nearby flockmates (Separation)
+            <br>
+            2. Steering towards the average heading of the nearby flock (Alignment)
+            <br>
+            3. Steering towards the average position of nearby flockmates (Cohesion)
+            <br>
+            <br>
+            "Nearby flockmates" is defined as a certain radius and angle around each individual. 
+            <br>
+            "Steering" is defined as accelerating by the difference between a target velocity and current velocity.
+            <br>
+            <br>
+            <i>Based on https://www.red3d.com/cwr/boids/</i>
+        </p>
+    </div>
+    <div id="options">
+        <p>Left and right click the view to interact with the boid
+        <br>
+        <b>OR</b>
+        <br>
+        Adjust the simulation variables</p>
+        <p>Population</p>
+        <input type="range" id="popRange" min=1 max=1000 step="5">
+        <p>Speed</p>
+        <input type="range" id="speedRange" min=100 max=2000 step="10">
+        <p>View Radius</p>
+        <input type="range" id="radiusRange" min=1 max=300 step=1>
+        <p>View Angle</p>
+        <input type="range" id="angleRange" min=-1 max=1 step=0.1>
+        <p>Alignment</p>
+        <input type="range" id="alignRange" min=0 max=2 step=0.1>
+        <p>Separation</p>
+        <input type="range" id="separateRange" min=0 max=2 step=0.1>
+        <p>Cohesion</p>
+        <input type="range" id="cohesionRange" min=0 max=2 step=0.1>
+        <p><i>Double-click this tab to collapse</i></p>
+    </div>
+    <div id="canvasContainer">
+        <canvas id="pleepCanvas" style="background-color: #000022;">
+    </div>
+
+</body>
+
+<script src="boid.js"></script>
+<script src="flock.js"></script>
+<script>
+    // where we're going, we don't need MVC...
+
+    let cv = document.getElementById("pleepCanvas");
+    let ctx = cv.getContext("2d");
+    let targetFPS = 60;
+    let displayFPS = false;
+    let fiveFrameSum = targetFPS * 5;
+    let lastTime = 0;// = new Date();
+    let mousePos = {x:0, y:0};
+    let mouseState = -1;
+    let mouseRadius = 100;
+
+    // ELECTRON ONLY
+    var userAgent = navigator.userAgent.toLowerCase();
+    if (userAgent.indexOf(' electron/') > -1) {
+        const { ipcRenderer } = require('electron');
+        ipcRenderer.on('toggleFPS', (event) => {
+            displayFPS = !displayFPS;
+            ipcRenderer.send('set-callback-toggleFPS');
+        });
+        ipcRenderer.send('set-callback-toggleFPS');
+
+        ipcRenderer.on('toggleInfo', (e) => {
+            toggleInfo();
+            ipcRenderer.send('set-callback-toggleInfo');
+        });
+        ipcRenderer.send('set-callback-toggleInfo');
+
+        ipcRenderer.on('openOptions', (e) => {
+            resizeOptions();
+            ipcRenderer.send('set-callback-openOptions');
+        });
+        ipcRenderer.send('set-callback-openOptions');
+    }
+    // END ELECTRON ONLY
+
+    // distribute based on window for good approx
+    var flockCtx = new flock(100, window.innerWidth, window.innerHeight);
+    resizeCanvas();
+
+    document.getElementById("speedRange").value = flockCtx.maxV;
+    document.getElementById("speedRange").addEventListener('input',
+    (e) => {
+        flockCtx.setMaxV(parseInt(e.target.value));
+    });
+    document.getElementById("popRange").value = flockCtx.pop;
+    document.getElementById("popRange").addEventListener('input',
+    (e) => {
+        flockCtx.setPop(parseInt(e.target.value));
+    });
+    document.getElementById("radiusRange").value = flockCtx.viewR;
+    document.getElementById("radiusRange").addEventListener('input',
+    (e) => {
+        flockCtx.setRadius(parseInt(e.target.value));
+    });
+    document.getElementById("angleRange").value = flockCtx.viewA;
+    document.getElementById("angleRange").addEventListener('input',
+    (e) => {
+        flockCtx.setAngle(parseFloat(e.target.value));
+    });
+    document.getElementById("alignRange").value = flockCtx.alignCoef;
+    document.getElementById("alignRange").addEventListener('input',
+    (e) => {
+        flockCtx.setAlign(parseFloat(e.target.value));
+    });
+    document.getElementById("separateRange").value = flockCtx.separateCoef;
+    document.getElementById("separateRange").addEventListener('input',
+    (e) => {
+        flockCtx.setSeparate(parseFloat(e.target.value));
+    });
+    document.getElementById("cohesionRange").value = flockCtx.cohesionCoef;
+    document.getElementById("cohesionRange").addEventListener('input',
+    (e) => {
+        flockCtx.setCohesion(parseFloat(e.target.value));
+    });
+
+    window.addEventListener('resize', resizeCanvas);
+    cv.addEventListener('mousemove', handleMouseMove);
+    cv.addEventListener('mousedown', handleMouseDown);
+    cv.addEventListener('mouseup',   handleMouseUp);
+    cv.addEventListener('mouseleave', handleMouseUp);
+    cv.addEventListener('contextmenu', (e) =>{ e.preventDefault() });
+    // more sophistocated stepping? double buffering?
+    //window.setInterval(drawCanvas, 1000/targetFPS);
+    window.requestAnimationFrame(drawCanvas);
+    let cvC = document.getElementById("canvasContainer");
+    let opt = document.getElementById("options");
+    cvC.addEventListener('resize', resizeCanvas);
+    opt.addEventListener('dblclick', resizeOptions);
+
+    function resizeOptions() {
+        let optPos = window.getComputedStyle(opt).left;
+        //let cvcMargin = window.getComputedStyle(cvC).marginLeft;
+        if (optPos == '-150px') {
+            opt.style.left = "0px";
+            cvC.style.marginLeft = "160px";
+        } else {
+            opt.style.left = "-150px";
+            cvC.style.marginLeft = "10px";
+        }
+        //cvC.style.marginLeft = opt.style.width + 10;
+        resizeCanvas();
+    }
+
+    function resizeCanvas() {
+        //console.log(cv.style);
+        cv.style.width = "100%";
+        cv.style.height = "100%";
+        cv.width = cv.offsetWidth;
+        cv.height = cv.offsetHeight;
+
+        flockCtx.setBounds(cv.width, cv.height);
+        //cv.width = window.innerWidth;
+        //cv.height = window.innerHeight;
+    }
+
+    function handleMouseMove(e) {
+        let rect = cv.getBoundingClientRect();
+        mousePos.x = e.clientX - rect.left;
+        mousePos.y = e.clientY - rect.top;
+    }
+    function handleMouseDown(e) {
+        e.preventDefault();
+        mouseState = e.button;
+    }
+    function handleMouseUp(e) {
+        mouseState = -1;
+    }
+    function handleMousePerFrame() {
+        // boids pos are sorted on x
+        let mousegrd = ctx.createRadialGradient(mousePos.x,mousePos.y, mouseRadius/4, mousePos.x,mousePos.y, mouseRadius);
+        if (mouseState == 0) {
+            mousegrd.addColorStop(0, "rgba(200,200,200, 0.5)");
+            mousegrd.addColorStop(1, "rgba(0,0,0,0)");
+        } else if (mouseState == 2) {
+            mousegrd.addColorStop(0, "rgba(0,0,0,0)");
+            mousegrd.addColorStop(1, "rgba(200,200,200, 0.5)");
+        }
+        ctx.beginPath();
+        ctx.arc(mousePos.x, mousePos.y, mouseRadius, 0, 2*Math.PI);
+        ctx.fillStyle = mousegrd;
+        ctx.fill();
+
+        if (mouseState == 0) {
+            flockCtx.applyRelativeForce(mousePos, mouseRadius, 50);
+        } else if (mouseState == 2) {
+            flockCtx.applyRelativeForce(mousePos, mouseRadius,-50);
+        }
+    }
+
+    //for requestAnimationFrame this needs to accept timestamp
+    function drawCanvas(timestamp) {
+        const timeStep = timestamp - lastTime;
+        lastTime = timestamp;
+        // if timestemp is large (window was hidden) wait until next
+        if (timeStep > 500) {
+            window.requestAnimationFrame(drawCanvas);
+            return;
+        }
+        ctx.clearRect(0, 0, cv.width, cv.height);
+        //let thisTime = new Date();
+        //let timeStep = thisTime - lastTime; 
+        //lastTime = thisTime;
+        if (displayFPS) showFPS(ctx, timeStep);
+
+        // presort boids for spacial separation and short-circuiting
+        flockCtx.sortX();
+        if (mouseState != -1) handleMousePerFrame();
+
+        flockCtx.primeUpdate();
+        flockCtx.update(timeStep);
+
+        flockCtx.draw(ctx);
+
+        window.requestAnimationFrame(drawCanvas);
+    }
+
+    function showFPS(ctx, ts) {
+        fiveFrameSum = (fiveFrameSum * 4 / 5) + ts;
+        ctx.font = "30px Arial";
+        ctx.fillStyle = "white";
+        ctx.fillText(Math.floor(1000/(fiveFrameSum/5)), 12, 30);
+    }
+
+    function toggleInfo() {
+        let info = document.getElementById('info');
+        if (info.style.display == 'none') {
+            info.style.display = 'block';
+        } else {
+            info.style.display = 'none';
+        }
+    }
+</script>
+</html>
